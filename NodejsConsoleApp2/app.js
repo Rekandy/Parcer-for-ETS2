@@ -1,3 +1,4 @@
+const https = require('https');
 const xmldom = require('xmldom');
 const { DOMParser } = xmldom;
 const fs = require('fs');
@@ -6,7 +7,12 @@ async function fetchRadioInfo(url) {
     try {
         const response = await fetch(url);
         const html = await response.text();
-        const parser = new DOMParser();
+        const parser = new DOMParser({
+            errorHandler: {
+                warning: () => { },  
+                error: (msg) => { console.error(msg) }  
+            }
+        });
         const doc = parser.parseFromString(html, 'text/html');
         const stationElements = doc.getElementsByClassName('stations__station');
         const radioInfoList = [];
@@ -20,7 +26,18 @@ async function fetchRadioInfo(url) {
                 }
             }
             if (radioButton) {
-                const streamValue = radioButton.getAttribute('stream');
+                let streamValue = radioButton.getAttribute('stream');
+                try {
+                    const redirectResponse = await fetch(streamValue);
+                    if (redirectResponse.redirected) {
+                        streamValue = redirectResponse.url;
+                    }
+                    console.log("URL successfully parsed: " + streamValue);
+                } catch (error) {
+                    console.error(`Error while executing HTTP request: ${error.message}`);
+                    continue;
+                }
+
                 let radioNameValue = radioButton.getAttribute('radioName');
                 radioNameValue = radioNameValue.replace(/&#34;/g, '');
                 radioNameValue = radioNameValue.replace(/&#39;/g, "'");
@@ -35,12 +52,12 @@ async function fetchRadioInfo(url) {
                 }
                 radioInfoList.push({ stream: streamValue, radioName: radioNameValue, genre: genre });
             } else {
-                console.error('Кнопка радио не найдена');
+                console.error('Radio button not found');
             }
         }
         return radioInfoList;
     } catch (error) {
-        console.error('Ошибка при получении информации о радио:', error);
+        console.error('Error while retrieving radio information:', error);
         return null;
     }
 }
@@ -56,12 +73,13 @@ async function fetchRadioInfoMultipleTimes(urls) {
             });
         }
     }
-    const radioInfoList = Array.from(radioInfoSet, infoString => JSON.parse(infoString));
+    let radioInfoList = Array.from(radioInfoSet, infoString => JSON.parse(infoString));
+    radioInfoList = radioInfoList.sort((a, b) => a.stream.localeCompare(b.stream));
     return radioInfoList;
 }
 
 const baseURL = 'https://onlineradiobox.com/ua/?cs=ua.radiorelax.com.ua';
-const urls = Array.from({ length: 14 }, (_, i) => `${baseURL}&p=${i}&tzLoc=Europe%2FWarsaw`);
+const urls = Array.from({ length: 15 }, (_, i) => `${baseURL}&p=${i}&tzLoc=Europe%2FWarsaw`);
 
 fetchRadioInfoMultipleTimes(urls)
     .then((radioInfoList) => {
@@ -69,12 +87,13 @@ fetchRadioInfoMultipleTimes(urls)
         const lastResult = radioInfoList.length - 1;
         logData += ` stream_data: ${lastResult}\n`;
         radioInfoList.forEach((info, index) => {
-            const formattedInfo = ` stream_data[${index}]: "${info.stream}|${info.radioName}|${info.genre}|UA|320|0"`;
+            const bitrate = ['128', '160', '192', '256', '320'].find(bit => info.stream.includes(bit) || info.radioName.includes(bit)) || '320';
+            const formattedInfo = ` stream_data[${index}]: "${info.stream}|${info.radioName}|${info.genre}|UA|${bitrate}|0"`;
             logData += formattedInfo + '\n';
         });
-        logData += '}\n'; // Закрывающая скобка
-        logData += '\n'; // Пустая строка
-        logData += '}\n'; // Закрывающая скобка
+        logData += '}\n';
+        logData += '\n';
+        logData += '}\n';
         fs.writeFileSync('live_streams.sii', logData);
     })
     .catch((error) => {
