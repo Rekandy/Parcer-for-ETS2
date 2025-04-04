@@ -83,6 +83,8 @@ async function fetchRadioInfo(url) {
                 let radioNameValue = radioButton.getAttribute('radioName');
                 radioNameValue = radioNameValue.replace(/"/g, '');
                 radioNameValue = radioNameValue.replace(/'/g, "'");
+                radioNameValue = radioNameValue.replace(/&#39;/g, "'");
+                radioNameValue = radioNameValue.replace(/&#34;/g, "'");
                 const links = stationElements[i].getElementsByTagName('a');
                 let genre;
                 for (let j = 0; j < links.length; j++) {
