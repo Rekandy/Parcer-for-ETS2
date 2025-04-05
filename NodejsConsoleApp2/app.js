@@ -1,147 +1,144 @@
-const https = require('https');
-const xmldom = require('xmldom');
-const { DOMParser } = xmldom;
-const fs = require('fs');
+const { DOMParser } = require('xmldom');
+const fs = require('fs').promises;
 
-async function fetchWithTimeout(url, timeout = 5000) {
+const SUPPORTED_AUDIO_TYPES = new Set(['audio/mpeg', 'audio/mp3']);
+const FETCH_TIMEOUT = 5000;
+const DELAY_MS = 500;
+const BASE_URL = 'https://onlineradiobox.com/ua/?cs=ua.radiorelax.com.ua';
+const PAGE_COUNT = 14;
+const CONCURRENT_LIMIT = 3;
+
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+const fetchWithTimeout = async (url, timeout = FETCH_TIMEOUT) => {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    const id = setTimeout(() => controller.abort(), timeout);
     try {
-        const response = await fetch(url, { signal: controller.signal });
-        clearTimeout(timeoutId);
-        return response;
-    } catch (error) {
-        clearTimeout(timeoutId);
-        throw error;
+        const res = await fetch(url, { signal: controller.signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res;
+    } catch (e) {
+        throw e.name === 'AbortError' ? new Error('Timeout') : e;
+    } finally {
+        clearTimeout(id);
     }
-}
+};
 
-async function fetchRadioInfo(url) {
+const processStream = async stream => {
+    if (!stream) return null;
     try {
-        const response = await fetchWithTimeout(url);
-        const html = await response.text();
-        const parser = new DOMParser({
-            errorHandler: {
-                warning: () => { },
-                error: (msg) => { console.error(msg) }
-            }
-        });
-        const doc = parser.parseFromString(html, 'text/html');
-        const stationElements = doc.getElementsByClassName('stations__station');
-        const radioInfoList = [];
+        const res = await fetchWithTimeout(stream);
+        const url = res.redirected ? res.url : stream;
+        const type = res.headers.get('content-type')?.toLowerCase() || '';
 
-        for (let i = 0; i < stationElements.length; i++) {
-            const buttons = stationElements[i].getElementsByTagName('button');
-            let radioButton;
-            for (let j = 0; j < buttons.length; j++) {
-                if (buttons[j].getAttribute('class') === 'b-play station_play') {
-                    radioButton = buttons[j];
-                    break;
-                }
-            }
-            if (radioButton) {
-                let streamValue = radioButton.getAttribute('stream');
-                try {
-                    const redirectResponse = await fetchWithTimeout(streamValue);
-                    if (redirectResponse.redirected) {
-                        streamValue = redirectResponse.url;
-                    }
-                    console.log("URL successfully parsed: " + streamValue);
+        if (!type) return null;
 
-                    // Проверка содержимого streamValue
-                    const streamResponse = await fetchWithTimeout(streamValue);
-                    const contentType = streamResponse.headers.get('content-type') || '';
-                    let includeStream = false;
-
-                    if (contentType.includes('text/html')) {
-                        const streamContent = await streamResponse.text();
-                        const streamDoc = parser.parseFromString(streamContent, 'text/html');
-                        const sourceElements = streamDoc.getElementsByTagName('source');
-                        for (let k = 0; k < sourceElements.length; k++) {
-                            const type = sourceElements[k].getAttribute('type');
-                            if (type === 'audio/mpeg' || type === 'audio/ogg' || type === 'audio/mp3') {
-                                console.log(`Including stream ${streamValue} with type ${type}`);
-                                includeStream = true;
-                                break;
-                            }
-                        }
-                    } else if (contentType.includes('audio/mpeg') || contentType.includes('audio/ogg') || contentType.includes('audio/mp3')) {
-                        console.log(`Including stream ${streamValue} due to direct ${contentType} content`);
-                        includeStream = true;
-                    }
-
-                    if (!includeStream) {
-                        console.log(`Skipping stream ${streamValue} - no matching audio type`);
-                        continue;
-                    }
-
-                } catch (error) {
-                    console.error(`Error processing stream ${streamValue}: ${error.message}`);
-                    continue;
-                }
-
-                let radioNameValue = radioButton.getAttribute('radioName');
-                radioNameValue = radioNameValue.replace(/"/g, '');
-                radioNameValue = radioNameValue.replace(/'/g, "'");
-                radioNameValue = radioNameValue.replace(/&#39;/g, "'");
-                radioNameValue = radioNameValue.replace(/&#34;/g, "'");
-                const links = stationElements[i].getElementsByTagName('a');
-                let genre;
-                for (let j = 0; j < links.length; j++) {
-                    if (links[j].getAttribute('href').includes('/ua/genre/')) {
-                        genre = links[j].textContent.trim();
-                        genre = genre.charAt(0).toUpperCase() + genre.slice(1);
-                        break;
-                    }
-                }
-                radioInfoList.push({ stream: streamValue, radioName: radioNameValue, genre: genre });
-            } else {
-                console.error('Radio button not found');
-            }
+        if (type.includes('text/html')) {
+            const html = await res.text();
+            if (!html) return null;
+            const doc = new DOMParser({ errorHandler: { warning: () => { }, error: () => { } } })
+                .parseFromString(html, 'text/html');
+            if (!doc?.getElementsByTagName) return null;
+            return Array.from(doc.getElementsByTagName('source'))
+                .some(s => SUPPORTED_AUDIO_TYPES.has(s.getAttribute('type')))
+                ? url : null;
         }
-        return radioInfoList;
-    } catch (error) {
-        console.error('Error while retrieving radio information:', error);
+
+        return SUPPORTED_AUDIO_TYPES.has(type.split(';')[0]) ? url : null;
+    } catch (e) {
+        console.error(`Stream error (${stream}): ${e.message}`);
         return null;
     }
-}
+};
 
-async function fetchRadioInfoMultipleTimes(urls) {
-    const radioInfoSet = new Set();
-    for (let i = 0; i < urls.length; i++) {
-        console.log(`Processing URL ${i + 1}/${urls.length}: ${urls[i]}`);
-        const radioInfo = await fetchRadioInfo(urls[i]);
-        if (radioInfo) {
-            radioInfo.forEach(info => {
-                const infoString = JSON.stringify(info);
-                radioInfoSet.add(infoString);
-            });
-        }
+const fetchRadioInfo = async url => {
+    try {
+        const res = await fetchWithTimeout(url);
+        const html = await res.text();
+        if (!html) return [];
+
+        const doc = new DOMParser({ errorHandler: { warning: () => { }, error: () => { } } })
+            .parseFromString(html, 'text/html');
+        if (!doc?.getElementsByClassName) return [];
+
+        return Array.from(doc.getElementsByClassName('stations__station'))
+            .map(station => {
+                const btn = Array.from(station.getElementsByTagName('button'))
+                    .find(b => b.getAttribute('class') === 'b-play station_play');
+                if (!btn?.getAttribute('stream')) return null;
+                return {
+                    stream: btn.getAttribute('stream'), 
+                    radioName: (btn.getAttribute('radioName') || 'Unknown').replace(/&#34;/g, '"').replace(/&#39;/g, "'").replace(/"/g, "'"),
+                    genre: (Array.from(station.getElementsByTagName('a'))
+                        .find(a => a.getAttribute('href')?.includes('/ua/genre/'))
+                        ?.textContent.trim().replace(/^./, s => s.toUpperCase())) || 'Unknown'
+                };
+            })
+            .filter(Boolean);
+    } catch (e) {
+        console.error(`Fetch error (${url}): ${e.message}`);
+        return [];
     }
-    let radioInfoList = Array.from(radioInfoSet, infoString => JSON.parse(infoString));
-    radioInfoList = radioInfoList.sort((a, b) => a.stream.localeCompare(b.stream));
-    return radioInfoList;
-}
+};
 
-const baseURL = 'https://onlineradiobox.com/ua/?cs=ua.radiorelax.com.ua';
-const urls = Array.from({ length: 15 }, (_, i) => `${baseURL}&p=${i}&tzLoc=Europe%2FWarsaw`);
+const fetchAllRadioInfo = async () => {
+    const urls = Array.from({ length: PAGE_COUNT }, (_, i) =>
+        `${BASE_URL}&p=${i}&tzLoc=Europe%2FWarsaw`);
+    const radioSet = new Set();
 
-fetchRadioInfoMultipleTimes(urls)
-    .then((radioInfoList) => {
-        let logData = 'SiiNunit\n{\nlive_stream_def : .live_streams {\n';
-        const lastResult = radioInfoList.length - 1;
-        logData += ` stream_data: ${lastResult}\n`;
-        radioInfoList.forEach((info, index) => {
-            const bitrate = ['128', '160', '192', '256', '320'].find(bit => info.stream.includes(bit) || info.radioName.includes(bit)) || '320';
-            const formattedInfo = ` stream_data[${index}]: "${info.stream}|${info.radioName}|${info.genre}|UA|${bitrate}|0"`;
-            logData += formattedInfo + '\n';
-        });
-        logData += '}\n';
-        logData += '\n';
-        logData += '}\n';
-        fs.writeFileSync('live_streams.sii', logData);
-        console.log('File live_streams.sii successfully written');
-    })
-    .catch((error) => {
-        console.error('Error fetching radio info:', error);
+    const processBatch = async (batch, batchIndex) => {
+        console.log(`Processing batch ${batchIndex + 1}/${Math.ceil(urls.length / CONCURRENT_LIMIT)}`);
+        const results = await Promise.all(batch.map(async (url, i) => {
+            console.log(`Fetching ${batchIndex * CONCURRENT_LIMIT + i + 1}/${urls.length}: ${url}`);
+            const infos = await fetchRadioInfo(url);
+            return Promise.all(infos.map(async info => {
+                const stream = await processStream(info.stream);
+                return stream ? { ...info, stream } : null;
+            }));
+        }));
+
+        results.flat().filter(Boolean).forEach(info => radioSet.add(JSON.stringify(info)));
+    };
+
+    for (let i = 0; i < urls.length; i += CONCURRENT_LIMIT) {
+        const batch = urls.slice(i, i + CONCURRENT_LIMIT);
+        await processBatch(batch, i / CONCURRENT_LIMIT);
+        if (i + CONCURRENT_LIMIT < urls.length) await delay(DELAY_MS);
+    }
+
+    return Array.from(radioSet, JSON.parse)
+        .sort((a, b) => a.stream.localeCompare(b.stream));
+};
+
+const generateSiiFile = async list => {
+    const bitrateRegex = /(128|160|192|256|320)/;
+    const lines = [
+        'SiiNunit',
+        '{',
+        'live_stream_def : .live_streams {',
+        ` stream_data: ${list.length - 1}`
+    ];
+
+    list.forEach((info, i) => {
+        const bitrate = (info.stream.match(bitrateRegex) ||
+            info.radioName.match(bitrateRegex) || ['320'])[0];
+        lines.push(` stream_data[${i}]: "${info.stream}|${info.radioName}|${info.genre}|UA|${bitrate}|0"`);
     });
+
+    lines.push('}', '}');
+    await fs.writeFile('live_streams.sii', lines.join('\n'), 'utf8');
+};
+
+const main = async () => {
+    try {
+        const radioList = await fetchAllRadioInfo();
+        if (!radioList.length) throw new Error('No radio info collected');
+        await generateSiiFile(radioList);
+        console.log('live_streams.sii written successfully');
+    } catch (e) {
+        console.error('Main error:', e.message);
+        process.exit(1);
+    }
+};
+
+main();
