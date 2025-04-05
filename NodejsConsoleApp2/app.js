@@ -5,7 +5,7 @@ const SUPPORTED_AUDIO_TYPES = new Set(['audio/mpeg', 'audio/mp3']);
 const FETCH_TIMEOUT = 5000;
 const DELAY_MS = 500;
 const BASE_URL = 'https://onlineradiobox.com/ua/?cs=ua.radiorelax.com.ua';
-const PAGE_COUNT = 14;
+const PAGE_COUNT = 15;
 const CONCURRENT_LIMIT = 3;
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -68,7 +68,7 @@ const fetchRadioInfo = async url => {
                 if (!btn?.getAttribute('stream')) return null;
                 return {
                     stream: btn.getAttribute('stream'), 
-                    radioName: (btn.getAttribute('radioName') || 'Unknown').replace(/&#34;/g, '"').replace(/&#39;/g, "'").replace(/"/g, "'"),
+                    radioName: (btn.getAttribute('radioName') || 'Unknown').replace(/&#34;/g, '"').replace(/&#39;/g, "'").replace(/"/g, "'"), 
                     genre: (Array.from(station.getElementsByTagName('a'))
                         .find(a => a.getAttribute('href')?.includes('/ua/genre/'))
                         ?.textContent.trim().replace(/^./, s => s.toUpperCase())) || 'Unknown'
