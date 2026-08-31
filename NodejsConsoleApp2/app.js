@@ -1,8 +1,7 @@
-const { DOMParser } = require('xmldom');
+const { DOMParser } = require('@xmldom/xmldom');
 const fs = require('fs').promises;
 const http = require('http');
 const https = require('https');
-const axios = require('axios');
 
 // List of known broken streams
 const KNOWN_BROKEN_STREAMS = [

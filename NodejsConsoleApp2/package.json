@@ -6,6 +6,9 @@
   "author": {
     "name": ""
   },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.8.10"
+  },
   "devDependencies": {
     "eslint": "^8.57.0"
   },
