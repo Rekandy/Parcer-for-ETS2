@@ -101,6 +101,43 @@ const streamCache = new Map();
 const cookieJar = new Map();
 const skippedStreamsCount = { value: 0 };
 
+// Intentionally suppresses xmldom parser diagnostics (warnings/errors). The
+// scraped HTML is frequently malformed and these messages are pure noise for
+// this tool, so the handlers are deliberately empty. Shared by both DOMParser
+// call sites below.
+const SILENT_ERROR_HANDLER = { warning() { }, error() { } };
+
+// Reject stream candidates in formats this tool does not support (AAC, OGG,
+// HLS/m3u8) or that point at the unsupported "https://cast" hosts. Matches the
+// original inline checks exactly (both endsWith and includes variants).
+const isUnsupportedAudioUrl = candidate => {
+    const lower = candidate.toLowerCase();
+    return (
+        lower.endsWith('aac') ||
+        lower.endsWith('ogg') ||
+        lower.endsWith('m3u8') ||
+        lower.includes('aac') ||
+        lower.includes('ogg') ||
+        lower.includes('m3u8') ||
+        lower.startsWith('https://cast')
+    );
+};
+
+// Same rejection check as isUnsupportedAudioUrl but against dotted extensions
+// (".aac"/".ogg"/".m3u8"), as used for URLs extracted from <source>/<audio>.
+const isUnsupportedAudioSource = candidate => {
+    const lower = candidate.toLowerCase();
+    return (
+        lower.endsWith('.aac') ||
+        lower.endsWith('.ogg') ||
+        lower.endsWith('.m3u8') ||
+        lower.includes('.aac') ||
+        lower.includes('.ogg') ||
+        lower.includes('.m3u8') ||
+        lower.startsWith('https://cast')
+    );
+};
+
 const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
@@ -133,7 +170,7 @@ const fetchWithRetry = async (url, maxRetries = 3, initialTimeout = FETCH_TIMEOU
 
             const domain = new URL(url).hostname;
             if (cookieJar.has(domain)) {
-                options.headers['Cookie'] = cookieJar.get(domain);
+                options.headers.Cookie = cookieJar.get(domain);
             }
 
             const res = await fetch(url, options);
@@ -145,7 +182,7 @@ const fetchWithRetry = async (url, maxRetries = 3, initialTimeout = FETCH_TIMEOU
 
             if (timeoutId) clearTimeout(timeoutId);
             return res;
-        } catch (e) {
+        } catch {
             if (timeoutId) clearTimeout(timeoutId);
             retries++;
 
@@ -153,7 +190,7 @@ const fetchWithRetry = async (url, maxRetries = 3, initialTimeout = FETCH_TIMEOU
                 throw new Error(`Failed to load ${url}`);
             }
 
-            const backoff = Math.min(200 * Math.pow(1.2, retries) + Math.random() * 100, 1000);
+            const backoff = Math.min(200 * (1.2 ** retries) + Math.random() * 100, 1000);
             await delay(backoff);
         }
     }
@@ -209,7 +246,7 @@ const validateStream = (url) => {
                     req.destroy();
 
                     if (url.includes('_redirect_count=')) {
-                        const redirectCount = parseInt(url.match(/_redirect_count=(\d+)/)[1]);
+                        const redirectCount = parseInt(url.match(/_redirect_count=(\d+)/)[1], 10);
                         if (redirectCount >= 5) {
                             console.log(`Too many redirects for ${url}`);
                             resolve(false);
@@ -221,7 +258,7 @@ const validateStream = (url) => {
                     console.log(`Following redirect from ${url} to ${redirectUrl}`);
 
                     const nextUrl = redirectUrl.includes('_redirect_count=')
-                        ? redirectUrl.replace(/_redirect_count=(\d+)/, (m, p1) => `_redirect_count=${parseInt(p1) + 1}`)
+                        ? redirectUrl.replace(/_redirect_count=(\d+)/, (_match, p1) => `_redirect_count=${parseInt(p1, 10) + 1}`)
                         : `${redirectUrl}${redirectUrl.includes('?') ? '&' : '?'}_redirect_count=1`;
 
                     validateStream(nextUrl).then(resolve);
@@ -334,7 +371,7 @@ const detectBitrate = (url) => {
 
                 const chunks = [];
                 let totalLength = 0;
-                let startTime = Date.now();
+                const startTime = Date.now();
 
                 res.on('data', (chunk) => {
                     chunks.push(chunk);
@@ -374,11 +411,128 @@ const detectBitrate = (url) => {
                 resolve(null);
             });
 
-        } catch (error) {
+        } catch {
             clearTimeout(timeoutId);
             resolve(null);
         }
     });
+};
+
+// Validate a candidate URL, retrying up to MAX_STREAM_VALIDATION_RETRIES times
+// with an increasing delay. `label` is the wording used in the retry log line
+// (e.g. "audio source", "URL", "source", "stream") to preserve the original
+// per-call messages. Returns true as soon as validation succeeds.
+const validateWithRetries = async (candidateUrl, label) => {
+    let isValid = false;
+    for (let retryCount = 0; retryCount <= MAX_STREAM_VALIDATION_RETRIES; retryCount++) {
+        if (retryCount > 0) {
+            console.log(`Retry ${retryCount}/${MAX_STREAM_VALIDATION_RETRIES} for ${label} validation: ${candidateUrl}`);
+            await delay(1000 * retryCount);
+        }
+        isValid = await validateStream(candidateUrl);
+        if (isValid) break;
+    }
+    return isValid;
+};
+
+// Parse an HTML document string with the shared silent error handler. Returns
+// the parsed document, or null if parsing throws.
+const parseHtmlDocument = html => {
+    try {
+        return new DOMParser({ errorHandler: SILENT_ERROR_HANDLER })
+            .parseFromString(html, 'text/html');
+    } catch {
+        return null;
+    }
+};
+
+// Resolve the first <audio> element's src (if any) against the base url,
+// returning the absolute URL string or null. Mirrors the original inline logic.
+const extractAudioSourceUrl = (doc, baseUrl) => {
+    const audioElements = doc.getElementsByTagName('audio');
+    if (!audioElements || audioElements.length === 0) return null;
+    const src = audioElements[0].getAttribute('src');
+    if (!src) return null;
+    return new URL(src, baseUrl).href;
+};
+
+// Handle the branch where the HTML document exposes an <audio> element source.
+// Returns the resolved stream URL to use, or null to reject. Preserves the
+// original logging, skip-counting and cache-write behavior.
+const handleAudioElement = async (doc, url, normalizedStream) => {
+    const fullUrl = extractAudioSourceUrl(doc, url);
+    if (!fullUrl) return null;
+
+    if (isUnsupportedAudioSource(fullUrl)) return null;
+
+    if (isKnownBrokenStream(fullUrl)) {
+        skippedStreamsCount.value++;
+        console.log(`Skipped known broken audio source: ${fullUrl} (total skipped: ${skippedStreamsCount.value})`);
+        return null;
+    }
+
+    const isSourceValid = await validateWithRetries(fullUrl, 'audio source');
+    if (!isSourceValid) {
+        console.log(`Audio source validation failed after ${MAX_STREAM_VALIDATION_RETRIES + 1} attempts: ${fullUrl}`);
+        return null;
+    }
+
+    streamCache.set(normalizedStream, fullUrl);
+    return fullUrl;
+};
+
+// Iterate over <source> elements and return the first usable resolved URL, or
+// null if none qualify. Uses `return null` for hard rejections (unsupported
+// format / known broken) and skips sources that merely fail validation, exactly
+// as the original inline loop did.
+const handleSourceElements = async (sources, url, normalizedStream) => {
+    for (const source of Array.from(sources)) {
+        const sourceSrc = source.getAttribute('src');
+        if (!sourceSrc) continue;
+
+        const fullUrl = new URL(sourceSrc, url).href;
+        if (isUnsupportedAudioSource(fullUrl)) return null;
+
+        if (isKnownBrokenStream(fullUrl)) {
+            skippedStreamsCount.value++;
+            console.log(`Skipped known broken source: ${fullUrl} (total skipped: ${skippedStreamsCount.value})`);
+            return null;
+        }
+
+        const isSourceValid = await validateWithRetries(fullUrl, 'source');
+        if (!isSourceValid) continue;
+
+        streamCache.set(normalizedStream, fullUrl);
+        return fullUrl;
+    }
+
+    return null;
+};
+
+// Process an HTML (text/html) response: pick a usable stream URL from <source>
+// or <audio> elements, falling back to validating the page URL itself.
+const processHtmlResponse = async (html, url, normalizedStream) => {
+    if (!html) return null;
+
+    const doc = parseHtmlDocument(html);
+    if (!doc) return null;
+
+    const sources = doc.getElementsByTagName('source');
+    if (!sources || sources.length === 0) {
+        const audioResult = await handleAudioElement(doc, url, normalizedStream);
+        if (audioResult) return audioResult;
+
+        const isUrlValid = await validateWithRetries(url, 'URL');
+        if (!isUrlValid) {
+            console.log(`URL validation failed after ${MAX_STREAM_VALIDATION_RETRIES + 1} attempts: ${url}`);
+            return null;
+        }
+
+        streamCache.set(normalizedStream, url);
+        return url;
+    }
+
+    return handleSourceElements(sources, url, normalizedStream);
 };
 
 const processStream = async stream => {
@@ -392,15 +546,7 @@ const processStream = async stream => {
         return null;
     }
 
-    if (
-        normalizedStream.toLowerCase().endsWith('aac') ||
-        normalizedStream.toLowerCase().endsWith('ogg') ||
-        normalizedStream.toLowerCase().endsWith('m3u8') ||
-        normalizedStream.toLowerCase().includes('aac') ||
-        normalizedStream.toLowerCase().includes('ogg') ||
-        normalizedStream.toLowerCase().includes('m3u8') ||
-        normalizedStream.toLowerCase().startsWith('https://cast')
-    ) {
+    if (isUnsupportedAudioUrl(normalizedStream)) {
         return null;
     }
 
@@ -418,22 +564,14 @@ const processStream = async stream => {
     try {
         try {
             new URL(stream);
-        } catch (e) {
+        } catch {
             return null;
         }
 
         const res = await fetchWithRetry(stream);
         const url = res.redirected ? res.url : stream;
 
-        if (
-            url.toLowerCase().endsWith('aac') ||
-            url.toLowerCase().endsWith('ogg') ||
-            url.toLowerCase().endsWith('m3u8') ||
-            url.toLowerCase().includes('aac') ||
-            url.toLowerCase().includes('ogg') ||
-            url.toLowerCase().includes('m3u8') ||
-            url.toLowerCase().startsWith('https://cast')
-        ) {
+        if (isUnsupportedAudioUrl(url)) {
             return null;
         }
 
@@ -453,7 +591,7 @@ const processStream = async stream => {
                     streamCache.set(normalizedStream, url);
                     return url;
                 }
-            } catch (e) {
+            } catch {
                 const isStreamValid = await validateStream(url);
                 if (!isStreamValid) return null;
 
@@ -466,140 +604,10 @@ const processStream = async stream => {
 
         if (type.includes('text/html')) {
             const html = await res.text();
-            if (!html) return null;
-
-            let doc;
-            try {
-                doc = new DOMParser({
-                    errorHandler: { warning: () => { }, error: () => { } }
-                }).parseFromString(html, 'text/html');
-            } catch (e) {
-                return null;
-            }
-
-            const sources = doc.getElementsByTagName('source');
-            if (!sources || sources.length === 0) {
-                const audioElements = doc.getElementsByTagName('audio');
-                if (audioElements && audioElements.length > 0) {
-                    const src = audioElements[0].getAttribute('src');
-                    if (src) {
-                        const fullUrl = new URL(src, url).href;
-                        if (
-                            fullUrl.toLowerCase().endsWith('.aac') ||
-                            fullUrl.toLowerCase().endsWith('.ogg') ||
-                            fullUrl.toLowerCase().endsWith('.m3u8') ||
-                            fullUrl.toLowerCase().includes('.aac') ||
-                            fullUrl.toLowerCase().includes('.ogg') ||
-                            fullUrl.toLowerCase().includes('.m3u8') ||
-                            fullUrl.toLowerCase().startsWith('https://cast')
-                        ) {
-                            return null;
-                        }
-
-                        if (isKnownBrokenStream(fullUrl)) {
-                            skippedStreamsCount.value++;
-                            console.log(`Skipped known broken audio source: ${fullUrl} (total skipped: ${skippedStreamsCount.value})`);
-                            return null;
-                        }
-
-                        let isSourceValid = false;
-                        for (let retryCount = 0; retryCount <= MAX_STREAM_VALIDATION_RETRIES; retryCount++) {
-                            if (retryCount > 0) {
-                                console.log(`Retry ${retryCount}/${MAX_STREAM_VALIDATION_RETRIES} for audio source validation: ${fullUrl}`);
-                                await delay(1000 * retryCount);
-                            }
-                            isSourceValid = await validateStream(fullUrl);
-                            if (isSourceValid) break;
-                        }
-
-                        if (!isSourceValid) {
-                            console.log(`Audio source validation failed after ${MAX_STREAM_VALIDATION_RETRIES + 1} attempts: ${fullUrl}`);
-                            return null;
-                        }
-
-                        streamCache.set(normalizedStream, fullUrl);
-                        return fullUrl;
-                    }
-                }
-
-                let isUrlValid = false;
-                for (let retryCount = 0; retryCount <= MAX_STREAM_VALIDATION_RETRIES; retryCount++) {
-                    if (retryCount > 0) {
-                        console.log(`Retry ${retryCount}/${MAX_STREAM_VALIDATION_RETRIES} for URL validation: ${url}`);
-                        await delay(1000 * retryCount);
-                    }
-                    isUrlValid = await validateStream(url);
-                    if (isUrlValid) break;
-                }
-
-                if (!isUrlValid) {
-                    console.log(`URL validation failed after ${MAX_STREAM_VALIDATION_RETRIES + 1} attempts: ${url}`);
-                    return null;
-                }
-
-                streamCache.set(normalizedStream, url);
-                return url;
-            }
-
-            for (let i = 0; i < sources.length; i++) {
-                const sourceType = sources[i].getAttribute('type');
-                const sourceSrc = sources[i].getAttribute('src');
-                if (sourceSrc) {
-                    const fullUrl = new URL(sourceSrc, url).href;
-                    if (
-                        fullUrl.toLowerCase().endsWith('.aac') ||
-                        fullUrl.toLowerCase().endsWith('.ogg') ||
-                        fullUrl.toLowerCase().endsWith('.m3u8') ||
-                        fullUrl.toLowerCase().includes('.aac') ||
-                        fullUrl.toLowerCase().includes('.ogg') ||
-                        fullUrl.toLowerCase().includes('.m3u8') ||
-                        fullUrl.toLowerCase().startsWith('https://cast')
-                    ) {
-                        return null;
-                    }
-
-                    if (isKnownBrokenStream(fullUrl)) {
-                        skippedStreamsCount.value++;
-                        console.log(`Skipped known broken source: ${fullUrl} (total skipped: ${skippedStreamsCount.value})`);
-                        return null;
-                    }
-
-                    let isSourceValid = false;
-                    for (let retryCount = 0; retryCount <= MAX_STREAM_VALIDATION_RETRIES; retryCount++) {
-                        if (retryCount > 0) {
-                            console.log(`Retry ${retryCount}/${MAX_STREAM_VALIDATION_RETRIES} for source validation: ${fullUrl}`);
-                            await delay(1000 * retryCount);
-                        }
-                        isSourceValid = await validateStream(fullUrl);
-                        if (isSourceValid) break;
-                    }
-
-                    if (!isSourceValid) continue;
-
-                    streamCache.set(normalizedStream, fullUrl);
-                    return fullUrl;
-                }
-            }
-
-            return null;
+            return processHtmlResponse(html, url, normalizedStream);
         }
 
-        const baseType = type.split(';')[0];
-        const isAudioContent = SUPPORTED_AUDIO_TYPES.has(baseType) ||
-            baseType.includes('audio/') ||
-            baseType.includes('application/octet-stream') ||
-            baseType.includes('stream');
-
-        let isStreamWorkingProperly = false;
-        for (let retryCount = 0; retryCount <= MAX_STREAM_VALIDATION_RETRIES; retryCount++) {
-            if (retryCount > 0) {
-                console.log(`Retry ${retryCount}/${MAX_STREAM_VALIDATION_RETRIES} for stream validation: ${url}`);
-                await delay(1000 * retryCount);
-            }
-            isStreamWorkingProperly = await validateStream(url);
-            if (isStreamWorkingProperly) break;
-        }
-
+        const isStreamWorkingProperly = await validateWithRetries(url, 'stream');
         if (!isStreamWorkingProperly) {
             console.log(`Stream validation failed after ${MAX_STREAM_VALIDATION_RETRIES + 1} attempts: ${url}`);
             return null;
@@ -615,71 +623,85 @@ const processStream = async stream => {
     }
 };
 
+// Find the "b-play station_play" play button within a station element, or null.
+const findPlayButton = station => {
+    const buttons = station.getElementsByTagName('button');
+    for (const button of Array.from(buttons)) {
+        if (button.getAttribute('class') === 'b-play station_play') {
+            return button;
+        }
+    }
+    return null;
+};
+
+// Derive the station genre from its genre link, capitalizing the first letter.
+// Returns 'Unknown' when no genre link is present, matching the original logic.
+const extractGenre = station => {
+    const links = station.getElementsByTagName('a');
+    for (const link of Array.from(links)) {
+        const href = link.getAttribute('href');
+        if (href?.includes('/ua/genre/')) {
+            let genre = link.textContent.trim();
+            if (genre) {
+                genre = genre.charAt(0).toUpperCase() + genre.slice(1);
+            }
+            return genre;
+        }
+    }
+    return 'Unknown';
+};
+
+// Parse a single station element into { stream, radioName, genre }, or null when
+// the station has no play button/stream, or is a known broken stream (in which
+// case it is counted and logged as skipped, exactly as before).
+const parseStation = station => {
+    const btn = findPlayButton(station);
+
+    if (!btn?.getAttribute('stream')) return null;
+
+    const streamUrl = btn.getAttribute('stream');
+
+    if (isKnownBrokenStream(streamUrl)) {
+        skippedStreamsCount.value++;
+        console.log(`Skipped known broken station: ${streamUrl} (total skipped: ${skippedStreamsCount.value})`);
+        return null;
+    }
+
+    const genre = extractGenre(station);
+
+    const radioName = (btn.getAttribute('radioName') || 'Unknown')
+        .replace(/&#34;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/"/g, "'");
+
+    return {
+        stream: streamUrl,
+        radioName,
+        genre
+    };
+};
+
 const fetchRadioInfo = async url => {
     try {
         const res = await fetchWithRetry(url);
         const html = await res.text();
         if (!html) return [];
 
-        const doc = new DOMParser({
-            errorHandler: { warning: () => { }, error: () => { } }
-        }).parseFromString(html, 'text/html');
+        const doc = new DOMParser({ errorHandler: SILENT_ERROR_HANDLER })
+            .parseFromString(html, 'text/html');
 
         if (!doc?.getElementsByClassName) return [];
 
         const stations = doc.getElementsByClassName('stations__station');
         const results = [];
 
-        for (let i = 0; i < stations.length; i++) {
-            const station = stations[i];
-
-            let btn = null;
-            const buttons = station.getElementsByTagName('button');
-            for (let j = 0; j < buttons.length; j++) {
-                if (buttons[j].getAttribute('class') === 'b-play station_play') {
-                    btn = buttons[j];
-                    break;
-                }
-            }
-
-            if (!btn?.getAttribute('stream')) continue;
-
-            const streamUrl = btn.getAttribute('stream');
-
-            if (isKnownBrokenStream(streamUrl)) {
-                skippedStreamsCount.value++;
-                console.log(`Skipped known broken station: ${streamUrl} (total skipped: ${skippedStreamsCount.value})`);
-                continue;
-            }
-
-            let genre = 'Unknown';
-            const links = station.getElementsByTagName('a');
-            for (let j = 0; j < links.length; j++) {
-                const href = links[j].getAttribute('href');
-                if (href?.includes('/ua/genre/')) {
-                    genre = links[j].textContent.trim();
-                    if (genre) {
-                        genre = genre.charAt(0).toUpperCase() + genre.slice(1);
-                    }
-                    break;
-                }
-            }
-
-            let radioName = btn.getAttribute('radioName') || 'Unknown';
-            radioName = radioName
-                .replace(/&#34;/g, '"')
-                .replace(/&#39;/g, "'")
-                .replace(/"/g, "'");
-
-            results.push({
-                stream: streamUrl,
-                radioName,
-                genre
-            });
+        for (const station of Array.from(stations)) {
+            const info = parseStation(station);
+            if (info) results.push(info);
         }
 
         return results;
-    } catch (e) {
+    } catch {
         console.error(`Error loading page: ${url}`);
         return [];
     }
