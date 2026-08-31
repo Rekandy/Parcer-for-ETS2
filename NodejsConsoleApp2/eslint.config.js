@@ -6,7 +6,7 @@
 
 module.exports = [
     {
-        files: ['app.js'],
+        files: ['app.js', 'brokenStreams.js'],
         languageOptions: {
             ecmaVersion: 2022,
             sourceType: 'commonjs',
