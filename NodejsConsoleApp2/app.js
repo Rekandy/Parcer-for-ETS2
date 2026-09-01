@@ -2,89 +2,7 @@ const { DOMParser } = require("@xmldom/xmldom");
 const fs = require("node:fs").promises;
 const http = require("node:http");
 const https = require("node:https");
-
-// List of known broken streams
-const KNOWN_BROKEN_STREAMS = [
-    "http://176.102.194.71:44808/radio",
-    "http://185.96.188.24:8000/live",
-    "http://78.154.164.191:18001/4",
-    "http://91.203.4.121:8000/stream160",
-    "http://complex.in.ua:80/struy",
-    "http://online.sokal.lviv.ua:8000/sokalfm96.mp3",
-    "http://stream-154.zeno.fm/ilibzonk6hotv",
-    "https://audio.x-on.com.ua:8443/x-on-mp3-320.mp3",
-    "https://bestfm.fm/",
-    "https://c2.radioboss.fm:18472/stream",
-    "https://cdn-br2.live-tv.cloud/sferarvFM/64k/icecast.audio",
-    "https://cdn.vsnw.net:8943/kyiv_fm_128k",
-    "https://complex.in.ua/b128",
-    "https://complex.in.ua/buskfm",
-    "https://complex.in.ua/tvoeRadio",
-    "https://complex.in.ua/yantarne",
-    "https://complex.in.ua/Yavir",
-    "https://complex.in.ua/zhudachiv",
-    "https://ec5.yesstreaming.net:2225/stream",
-    "https://globalic.stream:1155/stream",
-    "https://globalic.stream:1440/stream",
-    "https://globalic.stream:1535/stream",
-    "https://globalic.stream:1575/stream",
-    "https://greeksonic.alphaserver.gr/8010/stream",
-    "https://icecast.xtvmedia.pp.ua/melodeon.mp3",
-    "https://icecast.xtvmedia.pp.ua/radiowandafm_hq.mp3",
-    "https://icecast.xtvmedia.pp.ua/UKRNR.mp3",
-    "https://listen6.myradio24.com/82192",
-    "https://live.1tv.od.ua/radio/stream/icecast.audio",
-    "https://main.inf.fm:8101/;",
-    "https://myradio24.org/46801;stream.nsv",
-    "https://onair.lviv.fm:8443/lviv.fm",
-    "https://online-radio.nv.ua/radionv.mp3",
-    "https://online.radiorecord.com.ua/rr_320",
-    "https://play.radiotakt.com.ua/",
-    "https://pulzusfm.eu/sionelo",
-    "https://radio.bestfm.ua/bestfm",
-    "https://radio.bug.fm:8000/radioBug",
-    "https://radio.c4.com.ua:8443/320",
-    "https://radio.dzvony.org.ua/",
-    "https://radio.groza.ua:8443/neoradio",
-    "https://radio.mfm.ua/online128",
-    "https://radio.perec.fm/radio-stilnoe",
-    "https://radio.radioshansonplus.com:8005/radio",
-    "https://radio.radioshansonplus.com:8055/radio",
-    "https://radio.rai.ua:9000/rai",
-    "https://radio.ukr.radio/ur3-mp3-m",
-    "https://radio.ukr.radio/ur5-mp3",
-    "https://radio.zfm.com.ua:8443/zfm",
-    "https://radiofm.stream:8443/muzvar_sq",
-    "https://radiolla.com/",
-    "https://radiostream.nakypilo.ua/full",
-    "https://rockradioua.online:8433/rock_dodatok_256",
-    "https://s5.radioforge.com:7908/live",
-    "https://s61.radiolize.com/radio/8000/radio.mp3",
-    "https://stream-153.zeno.fm/nkeaps48xg0uv",
-    "https://stream-157.zeno.fm/m7tw0rc5kuhvv",
-    "https://stream-159.zeno.fm/5ez2dnpgixktv",
-    "https://stream-159.zeno.fm/swzfd3a9dchvv",
-    "https://stream.blits-fm.ua/stream320",
-    "https://stream.chv.ua:8443/acc.mp3",
-    "https://stream.mistofm.com/listen/misto_fm_deep/radio.mp3",
-    "https://stream.mistonadbugom.com.ua:8006/radiomistonadbugom",
-    "https://stream.mjoy.ua:8443/kredens-cafe-radio_mp3",
-    "https://stream.mjoy.ua:8443/radio-egoisty",
-    "https://stream.mjoy.ua:8443/radio-great",
-    "https://stream.mjoy.ua:8443/radio-mousse",
-    "https://stream.radio.co/s4360dbc20/listen",
-    "https://stream.radio.silpo.ua/silpo",
-    "https://stream4.nadaje.com:9889/lux64",
-];
-
-// URL patterns for partial matching (for zeno.fm with tokens)
-const BROKEN_URL_PATTERNS = [
-    "stream-154.zeno.fm/ilibzonk6hotv",
-    "stream-153.zeno.fm/nkeaps48xg0uv",
-    "stream-157.zeno.fm/m7tw0rc5kuhvv",
-    "stream-159.zeno.fm/5ez2dnpgixktv",
-    "stream-159.zeno.fm/swzfd3a9dchvv",
-];
+const { isKnownBrokenStream } = require("./brokenStreams");
 
 const FETCH_TIMEOUT = 5000;
 const DELAY_MS = 100;
@@ -104,6 +22,7 @@ const skippedStreamsCount = { value: 0 };
 // scraped HTML is frequently malformed and these messages are pure noise for
 // this tool, so the handlers are deliberately empty. Shared by both DOMParser
 // call sites below.
+// eslint-disable-next-line no-empty-function -- silent no-op is intentional: it suppresses noisy @xmldom/xmldom diagnostics
 const SILENT_ERROR_HANDLER = { warning() { }, error() { } };
 
 // Reject stream candidates in formats this tool does not support (AAC, OGG,
@@ -195,19 +114,97 @@ const fetchWithRetry = async (url, maxRetries = 3, initialTimeout = FETCH_TIMEOU
     }
 };
 
-// Check if URL is a known broken stream
-const isKnownBrokenStream = (url) => {
-    if (KNOWN_BROKEN_STREAMS.includes(url)) {
-        return true;
-    }
-
-    for (const pattern of BROKEN_URL_PATTERNS) {
-        if (url.includes(pattern)) {
-            return true;
+// Handle a 3xx redirect during stream validation: enforce the redirect-count
+// cap, build the next URL (incrementing/appending _redirect_count) and recurse
+// through validateStream, forwarding the eventual boolean to resolve. Assumes
+// the caller has already cleared the timeout and destroyed the request.
+const handleValidationRedirect = (url, location, resolve) => {
+    if (url.includes("_redirect_count=")) {
+        const redirectCount = parseInt(url.match(/_redirect_count=(\d+)/)[1], 10);
+        if (redirectCount >= 5) {
+            console.log(`Too many redirects for ${url}`);
+            resolve(false);
+            return;
         }
     }
 
-    return false;
+    const redirectUrl = new URL(location, url).href;
+    console.log(`Following redirect from ${url} to ${redirectUrl}`);
+
+    const nextUrl = redirectUrl.includes("_redirect_count=")
+        ? redirectUrl.replace(/_redirect_count=(\d+)/, (_match, p1) => `_redirect_count=${parseInt(p1, 10) + 1}`)
+        : `${redirectUrl}${redirectUrl.includes("?") ? "&" : "?"}_redirect_count=1`;
+
+    validateStream(nextUrl).then(resolve);
+};
+
+// Attach the data/end/error listeners for a 2xx validation response. Resolves
+// true once at least minBytesToConfirm bytes arrive (or on a partial-but-
+// nonempty end), false on response error. Preserves the original log wording.
+const attachValidationResponseHandlers = (req, res, url, timeoutId, resolve) => {
+    let dataReceived = false;
+    let bytesReceived = 0;
+    const minBytesToConfirm = 128;
+
+    res.on("data", (chunk) => {
+        bytesReceived += chunk.length;
+
+        if (!dataReceived && bytesReceived >= minBytesToConfirm) {
+            dataReceived = true;
+            clearTimeout(timeoutId);
+            req.destroy();
+            console.log(`Stream validated successfully: ${url} (received ${bytesReceived} bytes)`);
+            resolve(true);
+        }
+    });
+
+    res.on("end", () => {
+        clearTimeout(timeoutId);
+        if (!dataReceived) {
+            console.log(`Stream validation incomplete for ${url}: received only ${bytesReceived} bytes`);
+            resolve(bytesReceived > 0);
+        } else {
+            resolve(true);
+        }
+    });
+
+    res.on("error", (err) => {
+        clearTimeout(timeoutId);
+        console.log(`Stream validation response error for ${url}: ${err.message}`);
+        resolve(false);
+    });
+};
+
+// Attach the request-level error/timeout/abort listeners for stream validation.
+// Each resolves false; the error listener distinguishes the common error codes
+// with the same log wording as the original inline handlers.
+const attachValidationRequestHandlers = (req, url, timeoutId, resolve) => {
+    req.on("error", (err) => {
+        clearTimeout(timeoutId);
+        if (err.code === "ECONNREFUSED") {
+            console.log(`Stream connection refused for ${url}`);
+        } else if (err.code === "ENOTFOUND") {
+            console.log(`Stream host not found for ${url}`);
+        } else if (err.code === "ETIMEDOUT") {
+            console.log(`Stream connection timed out for ${url}`);
+        } else {
+            console.log(`Stream request error for ${url}: ${err.code || err.message}`);
+        }
+        resolve(false);
+    });
+
+    req.on("timeout", () => {
+        clearTimeout(timeoutId);
+        req.destroy();
+        console.log(`Stream validation request timeout for ${url}`);
+        resolve(false);
+    });
+
+    req.on("abort", () => {
+        clearTimeout(timeoutId);
+        console.log(`Stream request aborted for ${url}`);
+        resolve(false);
+    });
 };
 
 // Validate if a stream URL actually works
@@ -243,24 +240,7 @@ const validateStream = (url) => {
                 if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
                     clearTimeout(timeoutId);
                     req.destroy();
-
-                    if (url.includes("_redirect_count=")) {
-                        const redirectCount = parseInt(url.match(/_redirect_count=(\d+)/)[1], 10);
-                        if (redirectCount >= 5) {
-                            console.log(`Too many redirects for ${url}`);
-                            resolve(false);
-                            return;
-                        }
-                    }
-
-                    const redirectUrl = new URL(res.headers.location, url).href;
-                    console.log(`Following redirect from ${url} to ${redirectUrl}`);
-
-                    const nextUrl = redirectUrl.includes("_redirect_count=")
-                        ? redirectUrl.replace(/_redirect_count=(\d+)/, (_match, p1) => `_redirect_count=${parseInt(p1, 10) + 1}`)
-                        : `${redirectUrl}${redirectUrl.includes("?") ? "&" : "?"}_redirect_count=1`;
-
-                    validateStream(nextUrl).then(resolve);
+                    handleValidationRedirect(url, res.headers.location, resolve);
                     return;
                 }
 
@@ -272,70 +252,57 @@ const validateStream = (url) => {
                     return;
                 }
 
-                let dataReceived = false;
-                let bytesReceived = 0;
-                const minBytesToConfirm = 128;
-
-                res.on("data", (chunk) => {
-                    bytesReceived += chunk.length;
-
-                    if (!dataReceived && bytesReceived >= minBytesToConfirm) {
-                        dataReceived = true;
-                        clearTimeout(timeoutId);
-                        req.destroy();
-                        console.log(`Stream validated successfully: ${url} (received ${bytesReceived} bytes)`);
-                        resolve(true);
-                    }
-                });
-
-                res.on("end", () => {
-                    clearTimeout(timeoutId);
-                    if (!dataReceived) {
-                        console.log(`Stream validation incomplete for ${url}: received only ${bytesReceived} bytes`);
-                        resolve(bytesReceived > 0);
-                    } else {
-                        resolve(true);
-                    }
-                });
-
-                res.on("error", (err) => {
-                    clearTimeout(timeoutId);
-                    console.log(`Stream validation response error for ${url}: ${err.message}`);
-                    resolve(false);
-                });
+                attachValidationResponseHandlers(req, res, url, timeoutId, resolve);
             });
 
-            req.on("error", (err) => {
-                clearTimeout(timeoutId);
-                if (err.code === "ECONNREFUSED") {
-                    console.log(`Stream connection refused for ${url}`);
-                } else if (err.code === "ENOTFOUND") {
-                    console.log(`Stream host not found for ${url}`);
-                } else if (err.code === "ETIMEDOUT") {
-                    console.log(`Stream connection timed out for ${url}`);
-                } else {
-                    console.log(`Stream request error for ${url}: ${err.code || err.message}`);
-                }
-                resolve(false);
-            });
-
-            req.on("timeout", () => {
-                clearTimeout(timeoutId);
-                req.destroy();
-                console.log(`Stream validation request timeout for ${url}`);
-                resolve(false);
-            });
-
-            req.on("abort", () => {
-                clearTimeout(timeoutId);
-                console.log(`Stream request aborted for ${url}`);
-                resolve(false);
-            });
+            attachValidationRequestHandlers(req, url, timeoutId, resolve);
 
         } catch (error) {
             console.log(`Stream validation exception for ${url}: ${error.message}`);
             resolve(false);
         }
+    });
+};
+
+// Attach the bitrate-sampling listeners to a 200 response: accumulate bytes
+// until BITRATE_SAMPLE_SIZE is reached, estimate the throughput, snap it to the
+// nearest common bitrate and resolve that string. Non-200 or errors resolve
+// null. Behavior matches the original inline handler exactly.
+const attachBitrateResponseHandlers = (req, res, timeoutId, resolve) => {
+    if (res.statusCode !== 200) {
+        clearTimeout(timeoutId);
+        resolve(null);
+        return;
+    }
+
+    const chunks = [];
+    let totalLength = 0;
+    const startTime = Date.now();
+
+    res.on("data", (chunk) => {
+        chunks.push(chunk);
+        totalLength += chunk.length;
+
+        if (totalLength >= BITRATE_SAMPLE_SIZE) {
+            const endTime = Date.now();
+            const durationSeconds = (endTime - startTime) / 1000;
+
+            const bitrate = Math.round((totalLength * 8) / durationSeconds / 1000);
+
+            const commonBitrates = [128, 160, 192, 224, 256, 320];
+            const standardBitrate = commonBitrates.reduce((prev, curr) =>
+                Math.abs(curr - bitrate) < Math.abs(prev - bitrate) ? curr : prev,
+            );
+
+            clearTimeout(timeoutId);
+            req.destroy();
+            resolve(standardBitrate.toString());
+        }
+    });
+
+    res.on("error", () => {
+        clearTimeout(timeoutId);
+        resolve(null);
     });
 };
 
@@ -362,41 +329,7 @@ const detectBitrate = (url) => {
                 headers: { ...headers },
                 timeout: 8000,
             }, (res) => {
-                if (res.statusCode !== 200) {
-                    clearTimeout(timeoutId);
-                    resolve(null);
-                    return;
-                }
-
-                const chunks = [];
-                let totalLength = 0;
-                const startTime = Date.now();
-
-                res.on("data", (chunk) => {
-                    chunks.push(chunk);
-                    totalLength += chunk.length;
-
-                    if (totalLength >= BITRATE_SAMPLE_SIZE) {
-                        const endTime = Date.now();
-                        const durationSeconds = (endTime - startTime) / 1000;
-
-                        const bitrate = Math.round((totalLength * 8) / durationSeconds / 1000);
-
-                        const commonBitrates = [128, 160, 192, 224, 256, 320];
-                        const standardBitrate = commonBitrates.reduce((prev, curr) =>
-                            Math.abs(curr - bitrate) < Math.abs(prev - bitrate) ? curr : prev,
-                        );
-
-                        clearTimeout(timeoutId);
-                        req.destroy();
-                        resolve(standardBitrate.toString());
-                    }
-                });
-
-                res.on("error", () => {
-                    clearTimeout(timeoutId);
-                    resolve(null);
-                });
+                attachBitrateResponseHandlers(req, res, timeoutId, resolve);
             });
 
             req.on("error", () => {
@@ -534,6 +467,99 @@ const processHtmlResponse = async (html, url, normalizedStream) => {
     return handleSourceElements(sources, url, normalizedStream);
 };
 
+// Sentinel returned by the response helpers to mean "no decision yet, keep
+// going with the normal content-type handling". Distinct from null (reject)
+// and from any string URL (accept).
+const FALL_THROUGH = Symbol("fallThrough");
+
+// Handle the branch where the response has no content-type header: read the
+// first body chunk and accept the URL if any bytes arrive, caching it. On a
+// read error, re-validate and accept if still valid. Returns the accepted URL,
+// null to reject, or FALL_THROUGH to continue with normal handling (matching
+// the original code, where an empty read simply falls through).
+const handleNoContentTypeResponse = async (res, url, normalizedStream) => {
+    try {
+        const reader = res.body.getReader();
+        const { value } = await reader.read();
+        if (value && value.length > 0) {
+            streamCache.set(normalizedStream, url);
+            return url;
+        }
+    } catch {
+        const isStreamValid = await validateStream(url);
+        if (!isStreamValid) return null;
+
+        streamCache.set(normalizedStream, url);
+        return url;
+    }
+    return FALL_THROUGH;
+};
+
+// Handle a response once validation has passed: HTML pages route through the
+// source/audio extraction path, everything else is confirmed via the retry
+// validator and cached. Returns the resolved URL or null.
+const finalizeStreamResponse = async (res, contentType, url, normalizedStream) => {
+    const type = (contentType || "").toLowerCase();
+
+    if (type.includes("text/html")) {
+        const html = await res.text();
+        return processHtmlResponse(html, url, normalizedStream);
+    }
+
+    const isStreamWorkingProperly = await validateWithRetries(url, "stream");
+    if (!isStreamWorkingProperly) {
+        console.log(`Stream validation failed after ${MAX_STREAM_VALIDATION_RETRIES + 1} attempts: ${url}`);
+        return null;
+    }
+
+    const result = res.ok ? url : null;
+
+    if (result) streamCache.set(normalizedStream, result);
+    return result;
+};
+
+// Resolve a stream from a freshly fetched response: reject unsupported formats,
+// require validation to pass, honor the no-content-type fall-through, then hand
+// off to finalizeStreamResponse. Returns the resolved URL or null.
+const resolveFetchedStream = async (res, stream, normalizedStream) => {
+    const url = res.redirected ? res.url : stream;
+
+    if (isUnsupportedAudioUrl(url)) {
+        return null;
+    }
+
+    const isValid = await validateStream(url);
+    if (!isValid) {
+        console.log(`Stream validation failed for URL: ${url}`);
+        return null;
+    }
+
+    const contentType = res.headers.get("content-type");
+
+    if (!contentType) {
+        const noTypeResult = await handleNoContentTypeResponse(res, url, normalizedStream);
+        if (noTypeResult !== FALL_THROUGH) return noTypeResult;
+    }
+
+    return finalizeStreamResponse(res, contentType, url, normalizedStream);
+};
+
+// Return the cached URL for a stream if present and still valid, dropping it
+// from the cache when validation fails. Returns the cached URL, null when the
+// cached entry is invalid, or FALL_THROUGH when there is no cache entry.
+const resolveCachedStream = async normalizedStream => {
+    if (!streamCache.has(normalizedStream)) return FALL_THROUGH;
+
+    const cachedUrl = streamCache.get(normalizedStream);
+    const isValid = await validateStream(cachedUrl);
+    if (!isValid) {
+        streamCache.delete(normalizedStream);
+        console.log(`Removed invalid stream from cache: ${cachedUrl}`);
+        return null;
+    }
+    return cachedUrl;
+};
+
 const processStream = async stream => {
     if (!stream) return null;
 
@@ -549,73 +575,18 @@ const processStream = async stream => {
         return null;
     }
 
-    if (streamCache.has(normalizedStream)) {
-        const cachedUrl = streamCache.get(normalizedStream);
-        const isValid = await validateStream(cachedUrl);
-        if (!isValid) {
-            streamCache.delete(normalizedStream);
-            console.log(`Removed invalid stream from cache: ${cachedUrl}`);
-            return null;
-        }
-        return cachedUrl;
+    const cachedResult = await resolveCachedStream(normalizedStream);
+    if (cachedResult !== FALL_THROUGH) return cachedResult;
+
+    try {
+        new URL(stream);
+    } catch {
+        return null;
     }
 
     try {
-        try {
-            new URL(stream);
-        } catch {
-            return null;
-        }
-
         const res = await fetchWithRetry(stream);
-        const url = res.redirected ? res.url : stream;
-
-        if (isUnsupportedAudioUrl(url)) {
-            return null;
-        }
-
-        const isValid = await validateStream(url);
-        if (!isValid) {
-            console.log(`Stream validation failed for URL: ${url}`);
-            return null;
-        }
-
-        const contentType = res.headers.get("content-type");
-
-        if (!contentType) {
-            try {
-                const reader = res.body.getReader();
-                const { value } = await reader.read();
-                if (value && value.length > 0) {
-                    streamCache.set(normalizedStream, url);
-                    return url;
-                }
-            } catch {
-                const isStreamValid = await validateStream(url);
-                if (!isStreamValid) return null;
-
-                streamCache.set(normalizedStream, url);
-                return url;
-            }
-        }
-
-        const type = (contentType || "").toLowerCase();
-
-        if (type.includes("text/html")) {
-            const html = await res.text();
-            return processHtmlResponse(html, url, normalizedStream);
-        }
-
-        const isStreamWorkingProperly = await validateWithRetries(url, "stream");
-        if (!isStreamWorkingProperly) {
-            console.log(`Stream validation failed after ${MAX_STREAM_VALIDATION_RETRIES + 1} attempts: ${url}`);
-            return null;
-        }
-
-        const result = res.ok ? url : null;
-
-        if (result) streamCache.set(normalizedStream, result);
-        return result;
+        return await resolveFetchedStream(res, stream, normalizedStream);
     } catch (e) {
         console.error(`Error processing stream ${stream}: ${e.message}`);
         return null;
