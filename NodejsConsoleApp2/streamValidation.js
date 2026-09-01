@@ -12,7 +12,7 @@ import {
 // Top-level replacement for the redirect-count replace callback used by
 // handleValidationRedirect. Byte-identical behavior: same regex group, same
 // returned template string.
-const incrementRedirectCount = (_match, p1) => `_redirect_count=${parseInt(p1, 10) + 1}`;
+const incrementRedirectCount = (_match, p1) => `_redirect_count=${Number.parseInt(p1, 10) + 1}`;
 
 // Handle a 3xx redirect during stream validation: enforce the redirect-count
 // cap, build the next URL (incrementing/appending _redirect_count) and recurse
@@ -20,7 +20,7 @@ const incrementRedirectCount = (_match, p1) => `_redirect_count=${parseInt(p1, 1
 // the caller has already cleared the timeout and destroyed the request.
 const handleValidationRedirect = (url, location, resolve) => {
     if (url.includes("_redirect_count=")) {
-        const redirectCount = parseInt(url.match(/_redirect_count=(\d+)/)[1], 10);
+        const redirectCount = Number.parseInt(url.match(/_redirect_count=(\d+)/)[1], 10);
         if (redirectCount >= 5) {
             console.log(`Too many redirects for ${url}`);
             resolve(false);
@@ -31,9 +31,10 @@ const handleValidationRedirect = (url, location, resolve) => {
     const redirectUrl = new URL(location, url).href;
     console.log(`Following redirect from ${url} to ${redirectUrl}`);
 
+    const redirectSeparator = redirectUrl.includes("?") ? "&" : "?";
     const nextUrl = redirectUrl.includes("_redirect_count=")
         ? redirectUrl.replace(/_redirect_count=(\d+)/, incrementRedirectCount)
-        : `${redirectUrl}${redirectUrl.includes("?") ? "&" : "?"}_redirect_count=1`;
+        : `${redirectUrl}${redirectSeparator}_redirect_count=1`;
 
     validateStream(nextUrl).then(resolve);
 };
@@ -175,12 +176,10 @@ const attachBitrateResponseHandlers = (req, res, timeoutId, resolve) => {
         return;
     }
 
-    const chunks = [];
     let totalLength = 0;
     const startTime = Date.now();
 
     res.on("data", (chunk) => {
-        chunks.push(chunk);
         totalLength += chunk.length;
 
         if (totalLength >= BITRATE_SAMPLE_SIZE) {
@@ -192,7 +191,7 @@ const attachBitrateResponseHandlers = (req, res, timeoutId, resolve) => {
             const commonBitrates = [128, 160, 192, 224, 256, 320];
             const standardBitrate = commonBitrates.reduce((prev, curr) =>
                 Math.abs(curr - bitrate) < Math.abs(prev - bitrate) ? curr : prev,
-            );
+            commonBitrates[0]);
 
             clearTimeout(timeoutId);
             req.destroy();
