@@ -58,6 +58,34 @@ const isUnsupportedAudioSource = candidate => {
     );
 };
 
+// Clear a pending timeout (if one is set) and return undefined so the caller can
+// reset its handle. Extracted from fetchWithRetry to keep the repeated
+// clear-if-set guard out of that function's control flow.
+const clearPendingTimeout = timeoutId => {
+    if (timeoutId) clearTimeout(timeoutId);
+    return undefined;
+};
+
+// Build the fetch options for a request, attaching any stored cookie for the
+// request's domain. Returns { options, domain } so the caller can persist a
+// fresh set-cookie against the same domain.
+const buildFetchOptions = (url, controller, initialTimeout) => {
+    const options = {
+        signal: controller.signal,
+        headers: { ...headers },
+        keepalive: true,
+        redirect: "follow",
+        timeout: initialTimeout,
+    };
+
+    const domain = new URL(url).hostname;
+    if (cookieJar.has(domain)) {
+        options.headers.Cookie = cookieJar.get(domain);
+    }
+
+    return { options, domain };
+};
+
 const fetchWithRetry = async (url, maxRetries = 3, initialTimeout = FETCH_TIMEOUT) => {
     let retries = 0;
     let timeoutId;
@@ -65,21 +93,10 @@ const fetchWithRetry = async (url, maxRetries = 3, initialTimeout = FETCH_TIMEOU
     while (retries < maxRetries) {
         try {
             const controller = new AbortController();
-            if (timeoutId) clearTimeout(timeoutId);
+            timeoutId = clearPendingTimeout(timeoutId);
             timeoutId = setTimeout(() => controller.abort(), initialTimeout);
 
-            const options = {
-                signal: controller.signal,
-                headers: { ...headers },
-                keepalive: true,
-                redirect: "follow",
-                timeout: initialTimeout,
-            };
-
-            const domain = new URL(url).hostname;
-            if (cookieJar.has(domain)) {
-                options.headers.Cookie = cookieJar.get(domain);
-            }
+            const { options, domain } = buildFetchOptions(url, controller, initialTimeout);
 
             const res = await fetch(url, options);
 
@@ -88,16 +105,18 @@ const fetchWithRetry = async (url, maxRetries = 3, initialTimeout = FETCH_TIMEOU
                 cookieJar.set(domain, setCookieHeader);
             }
 
-            if (timeoutId) clearTimeout(timeoutId);
+            timeoutId = clearPendingTimeout(timeoutId);
             return res;
         } catch {
-            if (timeoutId) clearTimeout(timeoutId);
+            timeoutId = clearPendingTimeout(timeoutId);
             retries++;
 
             if (retries >= maxRetries) {
                 throw new Error(`Failed to load ${url}`);
             }
 
+            // Non-cryptographic jitter for retry backoff only; Math.random is
+            // appropriate here (this value is never used for security).
             const backoff = Math.min(200 * (1.2 ** retries) + Math.random() * 100, 1000);
             await delay(backoff);
         }
@@ -386,9 +405,9 @@ const parseStation = station => {
     const genre = extractGenre(station);
 
     const radioName = (btn.getAttribute("radioName") || "Unknown")
-        .replace(/&#34;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/"/g, "'");
+        .replaceAll(/&#34;/g, '"')
+        .replaceAll(/&#39;/g, "'")
+        .replaceAll(/"/g, "'");
 
     return {
         stream: streamUrl,
@@ -549,7 +568,7 @@ const main = async () => {
 // Merely importing app.js (e.g. a future test importing a helper) must NOT
 // start the live scraper. Compare this module's URL to the executed script.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-    main();
+    await main();
 }
 
 
