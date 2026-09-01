@@ -1,8 +1,8 @@
-const { DOMParser } = require("@xmldom/xmldom");
-const fs = require("node:fs").promises;
-const http = require("node:http");
-const https = require("node:https");
-const { isKnownBrokenStream } = require("./brokenStreams");
+import { DOMParser } from "@xmldom/xmldom";
+import { promises as fs } from "node:fs";
+import http from "node:http";
+import https from "node:https";
+import { isKnownBrokenStream } from "./brokenStreams.js";
 
 const FETCH_TIMEOUT = 5000;
 const DELAY_MS = 100;

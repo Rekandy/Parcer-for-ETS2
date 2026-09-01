@@ -2,14 +2,12 @@
 // CommonJS console app. No Qwik/Vue plugins are added: the scanner's
 // framework-specific findings ("wrap with $()", "Enforce Prettier in Vue",
 // "Non-HTML function returns HTML") are false positives for a plain Node app.
-'use strict';
-
-module.exports = [
+export default [
     {
         files: ['app.js', 'brokenStreams.js'],
         languageOptions: {
             ecmaVersion: 2022,
-            sourceType: 'commonjs',
+            sourceType: 'module',
             globals: {
                 // Node.js built-in globals used by app.js
                 fetch: 'readonly',
@@ -21,11 +19,6 @@ module.exports = [
                 clearInterval: 'readonly',
                 console: 'readonly',
                 process: 'readonly',
-                require: 'readonly',
-                module: 'writable',
-                exports: 'writable',
-                __dirname: 'readonly',
-                __filename: 'readonly',
                 Buffer: 'readonly',
                 Date: 'readonly',
                 Promise: 'readonly',
