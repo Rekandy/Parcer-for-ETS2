@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "description": "NodejsConsoleApp2",
   "main": "app.js",
+  "type": "module",
   "author": {
     "name": ""
   },

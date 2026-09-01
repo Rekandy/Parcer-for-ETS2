@@ -100,7 +100,7 @@ const isKnownBrokenStream = (url) => {
     return false;
 };
 
-module.exports = {
+export {
     KNOWN_BROKEN_STREAMS,
     BROKEN_URL_PATTERNS,
     isKnownBrokenStream,
