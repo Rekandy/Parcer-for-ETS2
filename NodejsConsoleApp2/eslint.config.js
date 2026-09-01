@@ -4,7 +4,7 @@
 // "Non-HTML function returns HTML") are false positives for a plain Node app.
 export default [
     {
-        files: ['app.js', 'brokenStreams.js'],
+        files: ['app.js', 'brokenStreams.js', 'streamValidation.js'],
         languageOptions: {
             ecmaVersion: 2022,
             sourceType: 'module',
