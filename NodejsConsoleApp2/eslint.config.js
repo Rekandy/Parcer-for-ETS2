@@ -1,10 +1,10 @@
 // ESLint flat config (supported by eslint 8.57) for this plain Node.js
-// CommonJS console app. No Qwik/Vue plugins are added: the scanner's
+// ES modules console app. No Qwik/Vue plugins are added: the scanner's
 // framework-specific findings ("wrap with $()", "Enforce Prettier in Vue",
 // "Non-HTML function returns HTML") are false positives for a plain Node app.
 export default [
     {
-        files: ['app.js', 'brokenStreams.js', 'streamValidation.js'],
+        files: ['app.js', 'brokenStreams.js', 'streamValidation.js', 'constants.js'],
         languageOptions: {
             ecmaVersion: 2022,
             sourceType: 'module',

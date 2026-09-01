@@ -7,7 +7,7 @@ import {
     MAX_STREAM_VALIDATION_RETRIES,
     headers,
     delay,
-} from "./app.js";
+} from "./constants.js";
 
 // Top-level replacement for the redirect-count replace callback used by
 // handleValidationRedirect. Byte-identical behavior: same regex group, same
