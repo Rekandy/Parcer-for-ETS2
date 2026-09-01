@@ -19,10 +19,10 @@ const skippedStreamsCount = { value: 0 };
 
 // Intentionally suppresses xmldom parser diagnostics (warnings/errors). The
 // scraped HTML is frequently malformed and these messages are pure noise for
-// this tool, so the handlers are deliberately empty. Shared by both DOMParser
-// call sites below.
-// eslint-disable-next-line no-empty-function -- silent no-op is intentional: it suppresses noisy @xmldom/xmldom diagnostics
-const SILENT_ERROR_HANDLER = { warning() { }, error() { } };
+// this tool, so the handlers are deliberately silent no-ops (they must NOT log,
+// or they would re-introduce the noise they exist to suppress). Shared by both
+// DOMParser call sites below.
+const SILENT_ERROR_HANDLER = { warning() { return; }, error() { return; } };
 
 // Reject stream candidates in formats this tool does not support (AAC, OGG,
 // HLS/m3u8) or that point at the unsupported "https://cast" hosts. Matches the
@@ -115,6 +115,15 @@ const fetchWithRetry = async (url, maxRetries = 3, initialTimeout = FETCH_TIMEOU
 
 // Parse an HTML document string with the shared silent error handler. Returns
 // the parsed document, or null if parsing throws.
+//
+// NOTE ON XSS FINDINGS: the code scanner flags the DOMParser.parseFromString
+// call sites (here and in fetchRadioInfo) as XSS sinks. These are false
+// positives: this tool only PARSES scraped HTML to read <source>/<audio>/anchor
+// attributes; it never renders that HTML into a browser DOM or writes it back to
+// any HTML output, so there is no injection surface. Parsing must stay (removing
+// it would break scraping) and sanitizing the input would be meaningless for a
+// parser. This scanner does not honor eslint-disable suppression comments, so
+// the findings are documented here rather than suppressed inline.
 const parseHtmlDocument = html => {
     try {
         return new DOMParser({ errorHandler: SILENT_ERROR_HANDLER })
@@ -472,8 +481,8 @@ const fetchAllRadioInfo = async () => {
         const batchPromises = [];
         const end = Math.min(i + CONCURRENT_LIMIT, urls.length);
 
-        for (let j = i; j < end; j++) {
-            batchPromises.push(processPage(urls[j], j));
+        for (const [offset, url] of urls.slice(i, end).entries()) {
+            batchPromises.push(processPage(url, i + offset));
         }
 
         await Promise.all(batchPromises);
@@ -497,8 +506,7 @@ const generateSiiFile = async list => {
         `\tstream_data: ${list.length}`,
     ];
 
-    for (let i = 0; i < list.length; i++) {
-        const info = list[i];
+    for (const [i, info] of list.entries()) {
         let bitrate = "320";
 
         if (info.detectedBitrate) {
