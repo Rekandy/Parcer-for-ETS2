@@ -28,7 +28,7 @@
 ## Установка
 
 ```bash
-cd NodejsConsoleApp2
+cd Parcer-for-ETS2
 npm install
 ```
 

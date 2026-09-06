@@ -11,7 +11,7 @@ import { validateStream, detectBitrate, validateWithRetries } from "./streamVali
 
 const FETCH_TIMEOUT = 5000;
 const DELAY_MS = 100;
-const BASE_URL = "https://onlineradiobox.com/ua/?cs=ua.radiorelax.com.ua";
+const BASE_URL = "https://onlineradiobox.ua/?cs=ua.kiss.fm&sf_langs=uk%2C";
 const PAGE_COUNT = 14;
 const CONCURRENT_LIMIT = 8;
 const STREAM_BATCH_SIZE = 20;
