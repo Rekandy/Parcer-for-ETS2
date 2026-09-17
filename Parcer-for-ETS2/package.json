@@ -4,13 +4,19 @@
   "description": "Parcer-for-ETS2",
   "main": "app.js",
   "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "lint": "eslint ."
+  },
   "author": {
     "name": ""
   },
   "dependencies": {
-    "@xmldom/xmldom": "^0.8.10"
+    "@xmldom/xmldom": "^0.9.12"
   },
   "devDependencies": {
-    "eslint": "^8.57.0"
+    "eslint": "^10.10.0"
   }
 }
