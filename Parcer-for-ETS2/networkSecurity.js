@@ -5,18 +5,18 @@ const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 const MAX_REDIRECTS = 5;
 const MAX_TEXT_RESPONSE_BYTES = 4 * 1024 * 1024;
 const PRIVATE_IPV4_RANGES = [
-    [0x00000000, 0x00ffffff],
-    [0x0a000000, 0x0affffff],
-    [0x64400000, 0x647fffff],
-    [0x7f000000, 0x7fffffff],
-    [0xa9fe0000, 0xa9feffff],
-    [0xac100000, 0xac1fffff],
-    [0xc0000000, 0xc00000ff],
-    [0xc0a80000, 0xc0a8ffff],
-    [0xc6120000, 0xc613ffff],
-    [0xc6336400, 0xc63364ff],
-    [0xcb007100, 0xcb0071ff],
-    [0xe0000000, 0xffffffff],
+    [0, 16777215],
+    [167772160, 184549375],
+    [1681915904, 1686110207],
+    [2130706432, 2147483647],
+    [2851995648, 2852061183],
+    [2886729728, 2887778303],
+    [3221225472, 3221225727],
+    [3232235520, 3232301055],
+    [3323068416, 3323199487],
+    [3325256704, 3325256959],
+    [3405803776, 3405804031],
+    [3758096384, 4294967295],
 ];
 
 const parseIpv4 = address => {
@@ -158,8 +158,10 @@ export const readTextWithLimit = async (response, maxBytes = MAX_TEXT_RESPONSE_B
     let totalBytes = 0;
 
     try {
-        while (true) {
-            const { done, value } = await reader.read();
+        let chunk;
+        do {
+            chunk = await reader.read();
+            const { done, value } = chunk;
             if (done) break;
             totalBytes += value.byteLength;
             if (totalBytes > maxBytes) {
@@ -167,7 +169,7 @@ export const readTextWithLimit = async (response, maxBytes = MAX_TEXT_RESPONSE_B
                 throw new Error("Remote text response exceeds the size limit");
             }
             chunks.push(decoder.decode(value, { stream: true }));
-        }
+        } while (!chunk.done);
         chunks.push(decoder.decode());
         return chunks.join("");
     } finally {

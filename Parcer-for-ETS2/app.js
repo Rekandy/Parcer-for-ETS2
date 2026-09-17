@@ -1,5 +1,6 @@
 import { DOMParser } from "@xmldom/xmldom";
 import { promises as fs } from "node:fs";
+import { randomInt } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { isKnownBrokenStream } from "./brokenStreams.js";
 import { readTextWithLimit, safeFetch } from "./networkSecurity.js";
@@ -117,7 +118,7 @@ const fetchWithRetry = async (url, maxRetries = 3, initialTimeout = FETCH_TIMEOU
 
             // This is retry jitter only, never a token, key, nonce, or other
             // security-sensitive value. Cryptographic randomness is not needed.
-            const backoff = Math.min(200 * (1.2 ** retries) + Math.random() * 100, 1000);
+            const backoff = Math.min(200 * (1.2 ** retries) + randomInt(0, 100), 1000);
             await delay(backoff);
         }
     }
@@ -217,10 +218,7 @@ const handleSourceElements = async (sources, url, normalizedStream) => {
 
 // Process an HTML (text/html) response: pick a usable stream URL from <source>
 // or <audio> elements, falling back to validating the page URL itself.
-const processHtmlResponse = async (html, url, normalizedStream) => {
-    if (!html) return null;
-
-    const doc = parseHtmlDocument(html);
+const processParsedHtmlResponse = async (doc, url, normalizedStream) => {
     if (!doc) return null;
 
     const sources = doc.getElementsByTagName("source");
@@ -276,8 +274,8 @@ const finalizeStreamResponse = async (res, contentType, url, normalizedStream) =
     const type = (contentType || "").toLowerCase();
 
     if (type.includes("text/html")) {
-        const html = await readTextWithLimit(res);
-        return processHtmlResponse(html, url, normalizedStream);
+        const doc = parseHtmlDocument(await readTextWithLimit(res));
+        return processParsedHtmlResponse(doc, url, normalizedStream);
     }
 
     const isStreamWorkingProperly = await validateWithRetries(url, "stream");

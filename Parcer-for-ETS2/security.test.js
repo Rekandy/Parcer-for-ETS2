@@ -68,5 +68,5 @@ test("HTML parsing returns structured station data, never raw markup", () => {
         radioName: "News & 'FM'",
         genre: "News",
     }]);
-    assert.equal(JSON.stringify(result).includes("<script>"), false);
+    assert.equal(result.some(station => Object.values(station).some(value => value.includes("<script>"))), false);
 });
