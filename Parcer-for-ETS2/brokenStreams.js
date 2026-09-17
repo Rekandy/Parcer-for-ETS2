@@ -2,7 +2,10 @@
 // Extracted from app.js verbatim so the main file stays under the file-length
 // limit. Behavior is identical to the original inline definitions.
 
-// List of known broken streams
+// List of known broken streams. These are data-only deny-list entries: every
+// entry is rejected before any network request, so the legacy HTTP schemes are
+// not active transport configuration and must not be rewritten to invented
+// HTTPS endpoints.
 const KNOWN_BROKEN_STREAMS = [
     "http://176.102.194.71:44808/radio",
     "http://185.96.188.24:8000/live",

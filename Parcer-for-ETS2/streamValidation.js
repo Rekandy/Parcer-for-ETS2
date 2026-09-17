@@ -1,6 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import { isKnownBrokenStream } from "./brokenStreams.js";
+import { normalizeRemoteUrl } from "./networkSecurity.js";
 import {
     BITRATE_SAMPLE_SIZE,
     STREAM_VALIDATION_TIMEOUT,
@@ -109,7 +110,14 @@ const attachValidationRequestHandlers = (req, url, timeoutId, resolve) => {
 };
 
 // Validate if a stream URL actually works
-const validateStream = (url) => {
+const validateStream = async url => {
+    try {
+        await normalizeRemoteUrl(url);
+    } catch {
+        console.log(`Stream URL rejected by network policy: ${url}`);
+        return false;
+    }
+
     return new Promise((resolve) => {
         try {
             if (isKnownBrokenStream(url)) {

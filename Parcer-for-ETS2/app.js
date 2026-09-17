@@ -2,6 +2,7 @@ import { DOMParser } from "@xmldom/xmldom";
 import { promises as fs } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { isKnownBrokenStream } from "./brokenStreams.js";
+import { readTextWithLimit, safeFetch } from "./networkSecurity.js";
 import {
     MAX_STREAM_VALIDATION_RETRIES,
     headers,
@@ -25,7 +26,7 @@ const skippedStreamsCount = { value: 0 };
 // this tool, so the handlers are deliberately silent no-ops (they must NOT log,
 // or they would re-introduce the noise they exist to suppress). Shared by both
 // DOMParser call sites below.
-const SILENT_ERROR_HANDLER = { warning() { return; }, error() { return; } };
+const SILENT_ERROR_HANDLER = () => undefined;
 
 // Reject stream candidates in formats this tool does not support (AAC, OGG,
 // HLS/m3u8) or that point at the unsupported "https://cast" hosts. Matches the
@@ -69,13 +70,12 @@ const clearPendingTimeout = timeoutId => {
 // Build the fetch options for a request, attaching any stored cookie for the
 // request's domain. Returns { options, domain } so the caller can persist a
 // fresh set-cookie against the same domain.
-const buildFetchOptions = (url, controller, initialTimeout) => {
+const buildFetchOptions = (url, controller) => {
     const options = {
         signal: controller.signal,
         headers: { ...headers },
         keepalive: true,
-        redirect: "follow",
-        timeout: initialTimeout,
+        redirect: "manual",
     };
 
     const domain = new URL(url).hostname;
@@ -96,9 +96,9 @@ const fetchWithRetry = async (url, maxRetries = 3, initialTimeout = FETCH_TIMEOU
             timeoutId = clearPendingTimeout(timeoutId);
             timeoutId = setTimeout(() => controller.abort(), initialTimeout);
 
-            const { options, domain } = buildFetchOptions(url, controller, initialTimeout);
+            const { options, domain } = buildFetchOptions(url, controller);
 
-            const res = await fetch(url, options);
+            const res = await safeFetch(url, options);
 
             const setCookieHeader = res.headers.get("set-cookie");
             if (setCookieHeader) {
@@ -115,8 +115,8 @@ const fetchWithRetry = async (url, maxRetries = 3, initialTimeout = FETCH_TIMEOU
                 throw new Error(`Failed to load ${url}`);
             }
 
-            // Non-cryptographic jitter for retry backoff only; Math.random is
-            // appropriate here (this value is never used for security).
+            // This is retry jitter only, never a token, key, nonce, or other
+            // security-sensitive value. Cryptographic randomness is not needed.
             const backoff = Math.min(200 * (1.2 ** retries) + Math.random() * 100, 1000);
             await delay(backoff);
         }
@@ -136,7 +136,7 @@ const fetchWithRetry = async (url, maxRetries = 3, initialTimeout = FETCH_TIMEOU
 // the findings are documented here rather than suppressed inline.
 const parseHtmlDocument = html => {
     try {
-        return new DOMParser({ errorHandler: SILENT_ERROR_HANDLER })
+        return new DOMParser({ onError: SILENT_ERROR_HANDLER })
             .parseFromString(html, "text/html");
     } catch {
         return null;
@@ -150,7 +150,11 @@ const extractAudioSourceUrl = (doc, baseUrl) => {
     if (!audioElements || audioElements.length === 0) return null;
     const src = audioElements[0].getAttribute("src");
     if (!src) return null;
-    return new URL(src, baseUrl).href;
+    try {
+        return new URL(src, baseUrl).href;
+    } catch {
+        return null;
+    }
 };
 
 // Handle the branch where the HTML document exposes an <audio> element source.
@@ -187,7 +191,12 @@ const handleSourceElements = async (sources, url, normalizedStream) => {
         const sourceSrc = source.getAttribute("src");
         if (!sourceSrc) continue;
 
-        const fullUrl = new URL(sourceSrc, url).href;
+        let fullUrl;
+        try {
+            fullUrl = new URL(sourceSrc, url).href;
+        } catch {
+            continue;
+        }
         if (isUnsupportedAudioSource(fullUrl)) return null;
 
         if (isKnownBrokenStream(fullUrl)) {
@@ -267,7 +276,7 @@ const finalizeStreamResponse = async (res, contentType, url, normalizedStream) =
     const type = (contentType || "").toLowerCase();
 
     if (type.includes("text/html")) {
-        const html = await res.text();
+        const html = await readTextWithLimit(res);
         return processHtmlResponse(html, url, normalizedStream);
     }
 
@@ -404,10 +413,12 @@ const parseStation = station => {
 
     const genre = extractGenre(station);
 
-    const radioName = (btn.getAttribute("radioName") || "Unknown")
-        .replaceAll(/&#34;/g, '"')
-        .replaceAll(/&#39;/g, "'")
-        .replaceAll(/"/g, "'");
+    const radioNameAttribute = Array.from(btn.attributes || [])
+        .find(attribute => attribute.name.toLowerCase() === "radioname");
+    const radioName = (radioNameAttribute?.value || "Unknown")
+        .replaceAll("&#34;", '"')
+        .replaceAll("&#39;", "'")
+        .replaceAll('"', "'");
 
     return {
         stream: streamUrl,
@@ -416,26 +427,27 @@ const parseStation = station => {
     };
 };
 
+const parseRadioInfoHtml = html => {
+    if (!html) return [];
+    const doc = parseHtmlDocument(html);
+    if (!doc?.getElementsByClassName) return [];
+    const stations = doc.getElementsByClassName("stations__station");
+    const results = [];
+
+    for (const station of Array.from(stations)) {
+        const info = parseStation(station);
+        if (info) results.push(info);
+    }
+
+    return results;
+};
+
 const fetchRadioInfo = async url => {
     try {
         const res = await fetchWithRetry(url);
-        const html = await res.text();
-        if (!html) return [];
-
-        const doc = new DOMParser({ errorHandler: SILENT_ERROR_HANDLER })
-            .parseFromString(html, "text/html");
-
-        if (!doc?.getElementsByClassName) return [];
-
-        const stations = doc.getElementsByClassName("stations__station");
-        const results = [];
-
-        for (const station of Array.from(stations)) {
-            const info = parseStation(station);
-            if (info) results.push(info);
-        }
-
-        return results;
+        const contentType = (res.headers.get("content-type") || "").toLowerCase();
+        if (contentType && !contentType.includes("text/html")) return [];
+        return parseRadioInfoHtml(await readTextWithLimit(res));
     } catch {
         console.error(`Error loading page: ${url}`);
         return [];
@@ -570,5 +582,7 @@ const main = async () => {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     await main();
 }
+
+export { parseRadioInfoHtml };
 
 
