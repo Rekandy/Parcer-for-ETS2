@@ -4,6 +4,20 @@ import net from "node:net";
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 const MAX_REDIRECTS = 5;
 const MAX_TEXT_RESPONSE_BYTES = 4 * 1024 * 1024;
+const PRIVATE_IPV4_RANGES = [
+    [0x00000000, 0x00ffffff],
+    [0x0a000000, 0x0affffff],
+    [0x64400000, 0x647fffff],
+    [0x7f000000, 0x7fffffff],
+    [0xa9fe0000, 0xa9feffff],
+    [0xac100000, 0xac1fffff],
+    [0xc0000000, 0xc00000ff],
+    [0xc0a80000, 0xc0a8ffff],
+    [0xc6120000, 0xc613ffff],
+    [0xc6336400, 0xc63364ff],
+    [0xcb007100, 0xcb0071ff],
+    [0xe0000000, 0xffffffff],
+];
 
 const parseIpv4 = address => {
     const parts = address.split(".").map(Number);
@@ -13,25 +27,13 @@ const parseIpv4 = address => {
     return parts;
 };
 
+const ipv4ToNumber = parts => (((parts[0] * 256 + parts[1]) * 256 + parts[2]) * 256) + parts[3];
+
 const isPrivateIpv4 = address => {
     const parts = parseIpv4(address);
     if (!parts) return false;
-
-    const [first, second] = parts;
-    return (
-        first === 0 ||
-        first === 10 ||
-        first === 127 ||
-        (first === 100 && second >= 64 && second <= 127) ||
-        (first === 169 && second === 254) ||
-        (first === 172 && second >= 16 && second <= 31) ||
-        (first === 192 && second === 0) ||
-        (first === 192 && second === 168) ||
-        (first === 198 && (second === 18 || second === 19)) ||
-        (first === 198 && second === 51) ||
-        (first === 203 && second === 0) ||
-        first >= 224
-    );
+    const value = ipv4ToNumber(parts);
+    return PRIVATE_IPV4_RANGES.some(([start, end]) => value >= start && value <= end);
 };
 
 const ipv6ToBigInt = address => {
@@ -82,7 +84,7 @@ const isPrivateAddress = address => net.isIP(address) === 4
     ? isPrivateIpv4(address)
     : isPrivateIpv6(address);
 
-export const normalizeRemoteUrl = async input => {
+const parseRemoteUrl = input => {
     let parsed;
     try {
         parsed = new URL(input);
@@ -90,14 +92,10 @@ export const normalizeRemoteUrl = async input => {
         throw new Error("Invalid remote URL");
     }
 
-    if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
-        throw new Error(`Unsupported URL protocol: ${parsed.protocol}`);
-    }
-    if (parsed.username || parsed.password) {
-        throw new Error("Remote URL credentials are not allowed");
-    }
+    return parsed;
+};
 
-    const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+const assertSafeHostname = async hostname => {
     if (!hostname || hostname === "localhost" || isPrivateAddress(hostname)) {
         throw new Error("Private or local network URLs are not allowed");
     }
@@ -113,7 +111,19 @@ export const normalizeRemoteUrl = async input => {
             throw new Error("Remote hostname resolves to a private or local address");
         }
     }
+};
 
+export const normalizeRemoteUrl = async input => {
+    const parsed = parseRemoteUrl(input);
+    if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
+        throw new Error(`Unsupported URL protocol: ${parsed.protocol}`);
+    }
+    if (parsed.username || parsed.password) {
+        throw new Error("Remote URL credentials are not allowed");
+    }
+
+    const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+    await assertSafeHostname(hostname);
     return parsed;
 };
 
